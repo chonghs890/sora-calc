@@ -1,0 +1,6 @@
+{
+  "name": "SORA Loan & Interest Calculator",
+  "description": "Singapore MAS-backed SORA mortgage and interest payment calculator with overnight rate compounding, amortization schedules, and regulatory stress testing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
