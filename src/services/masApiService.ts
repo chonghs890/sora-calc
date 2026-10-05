@@ -4,42 +4,70 @@ import { MAS_SORA_ARCHIVE, calculateMASCompoundedSORA } from '../data/masSoraDat
 const MAS_DATASTORE_URL =
   'https://eservices.mas.gov.sg/api/action/datastore/search.json?resource_id=9a0bf149-30c4-461a-8eed-4c58d8f6d4eb&limit=60&sort=end_of_day desc';
 
+export async function checkServerlessHealth(): Promise<{
+  ok: boolean;
+  data?: any;
+  error?: string;
+}> {
+  try {
+    const res = await fetch('/api/health');
+    if (res.ok) {
+      const data = await res.json();
+      return { ok: true, data };
+    }
+    return { ok: false, error: `Health check returned ${res.status}` };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Health check unreachable' };
+  }
+}
+
 export async function fetchSoraRates(
   customEndpoint?: string
 ): Promise<MASApiResponse> {
-  // 1. If user specified a custom backend integration endpoint, try it first
-  if (customEndpoint && customEndpoint.trim() !== '') {
-    try {
-      const response = await fetch(customEndpoint.trim(), {
-        headers: { Accept: 'application/json' },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        // Support standard formats { rates: [...], latestRate: ... } or raw array
-        const rawRates = Array.isArray(data) ? data : data.rates || [];
-        if (rawRates.length > 0) {
-          const formattedRates = normalizeRates(rawRates);
-          return {
-            success: true,
-            source: 'custom_backend',
-            endpoint: customEndpoint,
-            publishedAt: new Date().toLocaleTimeString('en-SG', {
-              hour12: false,
-              hour: '2-digit',
-              minute: '2-digit',
-            }) + ' SGT',
-            rates: formattedRates,
-            latestRate: formattedRates[0],
-            note: 'Successfully streamed from custom backend proxy',
-          };
-        }
+  const targetEndpoint = customEndpoint?.trim() || '/api/sora';
+
+  // 1. Try our dedicated serverless connection (/api/sora or custom user endpoint)
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+    const response = await fetch(targetEndpoint, {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    });
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const data = await response.json();
+      const rawRates = Array.isArray(data) ? data : data.rates || [];
+      if (rawRates.length > 0) {
+        const formattedRates = normalizeRates(rawRates);
+        const sourceLabel =
+          data.source === 'mas_api_gateway'
+            ? 'MAS API Gateway (/api/sora)'
+            : 'Custom Serverless Backend';
+
+        return {
+          success: true,
+          source: data.source === 'mas_api_gateway' ? 'live_api' : 'custom_backend',
+          endpoint: targetEndpoint,
+          publishedAt: data.publishedAt || '09:00 SGT',
+          rates: formattedRates,
+          latestRate: formattedRates[0],
+          note: data.configured
+            ? 'Live Stream from MAS API Gateway'
+            : data.message || 'Serverless Connection Active',
+        };
+      } else if (data.message) {
+        // e.g. MAS_KEY_ID not configured yet
+        console.info('[Serverless Connection]', data.message);
       }
-    } catch {
-      console.warn('Custom backend endpoint could not be reached, checking MAS upstream...');
     }
+  } catch {
+    // Falls through to direct fallback
   }
 
-  // 2. Attempt direct fetch to MAS Open Data API
+  // 2. Attempt direct fetch to MAS Open Data API (client-side)
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4000);
@@ -85,7 +113,7 @@ export async function fetchSoraRates(
       }
     }
   } catch {
-    // CORS or sandbox offline fallback
+    // Sandbox offline fallback
   }
 
   // 3. Fallback to MAS verified benchmark archive
@@ -95,7 +123,7 @@ export async function fetchSoraRates(
     publishedAt: '09:00 SGT',
     rates: MAS_SORA_ARCHIVE,
     latestRate: MAS_SORA_ARCHIVE[0],
-    note: 'Monetary Authority of Singapore (MAS) Official Benchmark Data',
+    note: 'Monetary Authority of Singapore (MAS) Benchmark Archive',
   };
 }
 
